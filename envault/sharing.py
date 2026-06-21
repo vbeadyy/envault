@@ -1,99 +1,97 @@
-"""Team sharing support for envault vaults.
-
-Provides functionality to export encrypted vault snapshots and import
-them, enabling secure sharing of .env configurations across teams.
-"""
-
+"""Vault sharing utilities: export and import encrypted snapshots."""
 import base64
 import json
-import time
-from typing import Optional
+from typing import Tuple
 
-from envault.crypto import derive_key, encrypt, decrypt
-from envault.vault import Vault, VaultError
-
-
-SHARE_FORMAT_VERSION = 1
+from .crypto import encrypt, decrypt, derive_key
+from .vault import Vault
 
 
 class SharingError(Exception):
-    """Raised when a sharing operation fails."""
+    """Raised when export or import fails."""
 
 
-def export_vault(vault: Vault, passphrase: str, recipient_passphrase: str) -> str:
-    """Export a vault as a portable encrypted snapshot string.
+def export_vault(vault: Vault, passphrase: str) -> str:
+    """Serialize and encrypt all vault entries to a portable base64 string.
 
-    The vault contents are re-encrypted with the recipient's passphrase so
-    they can be safely transmitted and imported by another user.
+    The snapshot format is::
 
-    Args:
-        vault: The Vault instance to export.
-        passphrase: Current passphrase used to read the vault.
-        recipient_passphrase: Passphrase the recipient will use to import.
+        base64( salt(16) + nonce(12) + ciphertext )
 
-    Returns:
-        A base64-encoded JSON string representing the encrypted snapshot.
-
-    Raises:
-        SharingError: If the vault cannot be exported.
+    where the plaintext is a JSON object mapping key -> plaintext value.
     """
-    try:
-        secrets = {key: vault.get(key) for key in vault.list_keys()}
-    except VaultError as exc:
-        raise SharingError(f"Failed to read vault for export: {exc}") from exc
+    if not passphrase:
+        raise SharingError("Passphrase must not be empty.")
 
-    payload = json.dumps(secrets).encode()
+    keys = vault.list_keys()
+    if not keys:
+        raise SharingError("Vault is empty; nothing to export.")
+
+    plaintext_map = {}
+    for key in keys:
+        try:
+            plaintext_map[key] = vault.get(key)
+        except Exception as exc:
+            raise SharingError(f"Failed to read key '{key}': {exc}") from exc
+
+    raw = json.dumps(plaintext_map, separators=(",", ":")).encode()
 
     import os
     salt = os.urandom(16)
-    key = derive_key(recipient_passphrase, salt)
-    ciphertext = encrypt(payload, key)
+    enc_key = derive_key(passphrase, salt)
+    nonce, ciphertext = encrypt(enc_key, raw)
 
-    snapshot = {
-        "version": SHARE_FORMAT_VERSION,
-        "salt": base64.b64encode(salt).decode(),
-        "ciphertext": base64.b64encode(ciphertext).decode(),
-        "exported_at": int(time.time()),
-    }
-    return base64.b64encode(json.dumps(snapshot).encode()).decode()
+    blob = salt + nonce + ciphertext
+    return base64.b64encode(blob).decode()
 
 
-def import_snapshot(snapshot_str: str, passphrase: str) -> dict:
-    """Decrypt and parse a shared vault snapshot.
+def import_snapshot(
+    vault: Vault,
+    passphrase: str,
+    snapshot: str,
+    overwrite: bool = False,
+) -> Tuple[int, int]:
+    """Decrypt a snapshot and merge its entries into *vault*.
 
-    Args:
-        snapshot_str: The base64-encoded snapshot produced by export_vault.
-        passphrase: Passphrase used when the snapshot was exported.
-
-    Returns:
-        A dict mapping secret keys to their plaintext values.
-
-    Raises:
-        SharingError: If decryption fails or the format is invalid.
+    Returns
+    -------
+    (added, skipped) counts.
     """
+    if not passphrase:
+        raise SharingError("Passphrase must not be empty.")
+
     try:
-        raw = json.loads(base64.b64decode(snapshot_str).decode())
+        blob = base64.b64decode(snapshot)
     except Exception as exc:
-        raise SharingError(f"Invalid snapshot format: {exc}") from exc
+        raise SharingError(f"Invalid snapshot encoding: {exc}") from exc
 
-    if raw.get("version") != SHARE_FORMAT_VERSION:
-        raise SharingError(
-            f"Unsupported snapshot version: {raw.get('version')}"
-        )
+    if len(blob) < 16 + 12 + 1:
+        raise SharingError("Snapshot data is too short to be valid.")
 
+    salt = blob[:16]
+    nonce = blob[16:28]
+    ciphertext = blob[28:]
+
+    enc_key = derive_key(passphrase, salt)
     try:
-        salt = base64.b64decode(raw["salt"])
-        ciphertext = base64.b64decode(raw["ciphertext"])
-    except KeyError as exc:
-        raise SharingError(f"Snapshot missing field: {exc}") from exc
-
-    key = derive_key(passphrase, salt)
-    try:
-        plaintext = decrypt(ciphertext, key)
+        raw = decrypt(enc_key, nonce, ciphertext)
     except Exception as exc:
-        raise SharingError("Decryption failed — wrong passphrase?") from exc
+        raise SharingError(f"Decryption failed — wrong passphrase or corrupt snapshot: {exc}") from exc
 
     try:
-        return json.loads(plaintext.decode())
+        plaintext_map = json.loads(raw.decode())
     except Exception as exc:
-        raise SharingError(f"Failed to parse decrypted payload: {exc}") from exc
+        raise SharingError(f"Snapshot payload is not valid JSON: {exc}") from exc
+
+    existing_keys = set(vault.list_keys())
+    added = 0
+    skipped = 0
+
+    for key, value in plaintext_map.items():
+        if key in existing_keys and not overwrite:
+            skipped += 1
+            continue
+        vault.set(key, value)
+        added += 1
+
+    return added, skipped
