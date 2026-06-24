@@ -25,6 +25,14 @@ def vault_path(tmp_path: Path) -> Path:
     return p
 
 
+@pytest.fixture()
+def locked_vault(vault_path: Path):
+    """Yield a vault_path with an active lock, releasing it after the test."""
+    lock = acquire_lock(vault_path)
+    yield vault_path
+    lock.unlink(missing_ok=True)
+
+
 class TestAcquireLock:
     def test_creates_lock_file(self, vault_path):
         lock = acquire_lock(vault_path)
@@ -44,13 +52,9 @@ class TestAcquireLock:
         assert lock == _lock_path(vault_path)
         lock.unlink()
 
-    def test_raises_when_already_locked(self, vault_path):
-        lock = acquire_lock(vault_path)
-        try:
-            with pytest.raises(LockError):
-                acquire_lock(vault_path, timeout=0.15)
-        finally:
-            lock.unlink()
+    def test_raises_when_already_locked(self, locked_vault):
+        with pytest.raises(LockError):
+            acquire_lock(locked_vault, timeout=0.15)
 
     def test_acquires_after_stale_lock_removed(self, vault_path):
         lock_file = _lock_path(vault_path)
@@ -85,10 +89,8 @@ class TestIsLocked:
     def test_false_when_no_lock(self, vault_path):
         assert not is_locked(vault_path)
 
-    def test_true_when_locked(self, vault_path):
-        lock = acquire_lock(vault_path)
-        assert is_locked(vault_path)
-        lock.unlink()
+    def test_true_when_locked(self, locked_vault):
+        assert is_locked(locked_vault)
 
     def test_false_for_stale_lock(self, vault_path):
         lock_file = _lock_path(vault_path)
