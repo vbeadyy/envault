@@ -21,6 +21,15 @@ def _open_vault(vault_file: str, passphrase: str, *, require_existing: bool = Tr
     return v
 
 
+def _prompt_passphrase(prompt: str = "Passphrase: ") -> str:
+    """Prompt for a passphrase, exiting if stdin is not a TTY."""
+    try:
+        return getpass.getpass(prompt)
+    except (EOFError, KeyboardInterrupt):
+        click.echo("\nAborted.", err=True)
+        sys.exit(1)
+
+
 @click.group()
 def cli() -> None:
     """envault — encrypted .env manager."""
@@ -34,8 +43,8 @@ def cmd_init(vault_file: str) -> None:
     if path.exists():
         click.echo(f"Vault already exists at {path}", err=True)
         sys.exit(1)
-    passphrase = getpass.getpass("New passphrase: ")
-    confirm = getpass.getpass("Confirm passphrase: ")
+    passphrase = _prompt_passphrase("New passphrase: ")
+    confirm = _prompt_passphrase("Confirm passphrase: ")
     if passphrase != confirm:
         click.echo("Passphrases do not match.", err=True)
         sys.exit(1)
@@ -50,7 +59,7 @@ def cmd_init(vault_file: str) -> None:
 @click.option("--file", "vault_file", default=DEFAULT_VAULT_FILENAME, show_default=True)
 def cmd_set(key: str, value: str, vault_file: str) -> None:
     """Set KEY to VALUE in the vault."""
-    passphrase = getpass.getpass("Passphrase: ")
+    passphrase = _prompt_passphrase()
     v = _open_vault(vault_file, passphrase)
     v.set(key, value)
     v.save()
@@ -62,7 +71,7 @@ def cmd_set(key: str, value: str, vault_file: str) -> None:
 @click.option("--file", "vault_file", default=DEFAULT_VAULT_FILENAME, show_default=True)
 def cmd_get(key: str, vault_file: str) -> None:
     """Print the value of KEY from the vault."""
-    passphrase = getpass.getpass("Passphrase: ")
+    passphrase = _prompt_passphrase()
     v = _open_vault(vault_file, passphrase)
     value = v.get(key)
     if value is None:
@@ -76,7 +85,7 @@ def cmd_get(key: str, vault_file: str) -> None:
 @click.option("--file", "vault_file", default=DEFAULT_VAULT_FILENAME, show_default=True)
 def cmd_delete(key: str, vault_file: str) -> None:
     """Delete KEY from the vault."""
-    passphrase = getpass.getpass("Passphrase: ")
+    passphrase = _prompt_passphrase()
     v = _open_vault(vault_file, passphrase)
     if not v.delete(key):
         click.echo(f"Key '{key}' not found.", err=True)
@@ -89,7 +98,7 @@ def cmd_delete(key: str, vault_file: str) -> None:
 @click.option("--file", "vault_file", default=DEFAULT_VAULT_FILENAME, show_default=True)
 def cmd_export(vault_file: str) -> None:
     """Export vault contents as a .env-formatted string."""
-    passphrase = getpass.getpass("Passphrase: ")
+    passphrase = _prompt_passphrase()
     v = _open_vault(vault_file, passphrase)
     click.echo(v.export_env())
 
