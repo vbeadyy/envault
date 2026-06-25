@@ -34,6 +34,8 @@ class Vault:
             raise VaultError(f"Vault file not found: {self.path}")
 
         raw = self.path.read_bytes()
+        if len(raw) < 16:
+            raise VaultError("Vault file is too short to be valid.")
         try:
             # First 16 bytes are the salt used for key derivation.
             self._salt = raw[:16]
@@ -41,6 +43,8 @@ class Vault:
             key = derive_key(self.passphrase, self._salt)
             plaintext = decrypt(key, ciphertext)
             self._data = json.loads(plaintext.decode())
+        except VaultError:
+            raise
         except Exception as exc:
             raise VaultError("Failed to decrypt vault — wrong passphrase?") from exc
 
@@ -77,6 +81,24 @@ class Vault:
         """Render vault contents as a .env-formatted string."""
         lines = [f'{k}={v}' for k, v in sorted(self._data.items())]
         return os.linesep.join(lines)
+
+    def import_env(self, env_string: str) -> int:
+        """Parse a .env-formatted string and load entries into the vault.
+
+        Lines starting with '#' are treated as comments and skipped.
+        Lines without an '=' separator are also skipped.
+
+        Returns the number of key/value pairs imported.
+        """
+        count = 0
+        for line in env_string.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            self._data[key.strip()] = value.strip()
+            count += 1
+        return count
 
     def __len__(self) -> int:
         return len(self._data)
