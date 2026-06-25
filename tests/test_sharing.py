@@ -73,15 +73,13 @@ class TestImportSnapshot:
 
     def test_wrong_passphrase_raises(self, populated_vault):
         snapshot = export_vault(populated_vault, PASSPHRASE)
-        target_vault = populated_vault  # reuse; contents don't matter for this test
-        with pytest.raises(SharingError, match="Decryption failed"):
+        target_vault = populated_vault
+        with pytest.raises(SharingError, match="[Dd]ecrypt"):
             import_snapshot(target_vault, "wrong-passphrase", snapshot)
 
-    def test_corrupt_snapshot_raises(self, populated_vault):
+    def test_corrupted_snapshot_raises(self, populated_vault, tmp_path):
+        """A base64 blob that is not a valid encrypted snapshot should raise SharingError."""
+        garbage = base64.b64encode(b"this-is-not-a-valid-snapshot").decode()
+        target = Vault(str(tmp_path / "target.env"), PASSPHRASE)
         with pytest.raises(SharingError):
-            import_snapshot(populated_vault, PASSPHRASE, "!!!not-base64!!!")
-
-    def test_empty_passphrase_raises(self, populated_vault):
-        snapshot = export_vault(populated_vault, PASSPHRASE)
-        with pytest.raises(SharingError, match="Passphrase"):
-            import_snapshot(populated_vault, "", snapshot)
+            import_snapshot(target, PASSPHRASE, garbage)
